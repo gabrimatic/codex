@@ -1,6 +1,28 @@
 use super::*;
+use crate::session::tests::make_session_and_context;
+use crate::tools::context::ToolCallSource;
+use crate::tools::context::ToolInvocation;
+use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::PreToolUsePayload;
+use crate::turn_diff_tracker::TurnDiffTracker;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+async fn invocation_for_payload(tool_name: &str, payload: ToolPayload) -> ToolInvocation {
+    let (session, turn) = make_session_and_context().await;
+    ToolInvocation {
+        session: session.into(),
+        turn: turn.into(),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: "call-agent-jobs".to_string(),
+        tool_name: codex_tools::ToolName::plain(tool_name),
+        source: ToolCallSource::Direct,
+        payload,
+    }
+}
 
 #[test]
 fn parse_csv_supports_quotes_and_commas() {
@@ -59,4 +81,40 @@ fn ensure_unique_headers_rejects_duplicates() {
         err,
         FunctionCallError::RespondToModel("csv header path is duplicated".to_string())
     );
+}
+
+#[tokio::test]
+async fn agent_jobs_pre_tool_use_payload_emits_canonical_tool_name() {
+    let arguments = json!({
+        "csv": "path\nsrc/lib.rs\n",
+        "instruction": "Review {path}",
+    });
+    let invocation = invocation_for_payload(
+        "spawn_agents_on_csv",
+        ToolPayload::Function {
+            arguments: arguments.to_string(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        BatchJobHandler.pre_tool_use_payload(&invocation),
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::new("spawn_agents_on_csv"),
+            tool_input: arguments,
+        })
+    );
+}
+
+#[tokio::test]
+async fn agent_jobs_pre_tool_use_payload_skips_non_function_payloads() {
+    let invocation = invocation_for_payload(
+        "spawn_agents_on_csv",
+        ToolPayload::Custom {
+            input: "ignored".to_string(),
+        },
+    )
+    .await;
+
+    assert_eq!(BatchJobHandler.pre_tool_use_payload(&invocation), None);
 }

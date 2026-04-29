@@ -63,6 +63,18 @@ where
     })
 }
 
+/// Renders raw tool arguments as a JSON value suitable for hook payloads.
+///
+/// Empty input returns an empty object so hook scripts can rely on an object
+/// shape. Inputs that fail to parse as JSON are passed through as a string so
+/// hooks still receive a deterministic payload alongside the original text.
+pub(crate) fn hook_tool_input_from_arguments(arguments: &str) -> Value {
+    if arguments.trim().is_empty() {
+        return Value::Object(serde_json::Map::new());
+    }
+    serde_json::from_str(arguments).unwrap_or_else(|_| Value::String(arguments.to_string()))
+}
+
 fn parse_arguments_with_base_path<T>(
     arguments: &str,
     base_path: &AbsolutePathBuf,

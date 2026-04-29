@@ -1,7 +1,29 @@
 use super::*;
+use crate::session::tests::make_session_and_context;
+use crate::tools::context::ToolCallSource;
+use crate::tools::context::ToolInvocation;
+use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::PreToolUsePayload;
+use crate::turn_diff_tracker::TurnDiffTracker;
 use pretty_assertions::assert_eq;
 use rmcp::model::AnnotateAble;
 use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+async fn invocation_for_payload(tool_name: &str, payload: ToolPayload) -> ToolInvocation {
+    let (session, turn) = make_session_and_context().await;
+    ToolInvocation {
+        session: session.into(),
+        turn: turn.into(),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: "call-mcp-resource".to_string(),
+        tool_name: codex_tools::ToolName::plain(tool_name),
+        source: ToolCallSource::Direct,
+        payload,
+    }
+}
 
 fn resource(uri: &str, name: &str) -> Resource {
     rmcp::model::RawResource {
@@ -122,4 +144,57 @@ fn template_with_server_serializes_server_field() {
             "name": "memo"
         })
     );
+}
+
+#[tokio::test]
+async fn mcp_resource_pre_tool_use_payload_emits_canonical_tool_name() {
+    let arguments = json!({ "server": "memory", "cursor": "page-2" });
+    let invocation = invocation_for_payload(
+        "list_mcp_resources",
+        ToolPayload::Function {
+            arguments: arguments.to_string(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        McpResourceHandler.pre_tool_use_payload(&invocation),
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::new("list_mcp_resources"),
+            tool_input: arguments,
+        })
+    );
+}
+
+#[tokio::test]
+async fn mcp_resource_pre_tool_use_payload_handles_read_resource() {
+    let arguments = json!({ "server": "filesystem", "uri": "file:///etc/hosts" });
+    let invocation = invocation_for_payload(
+        "read_mcp_resource",
+        ToolPayload::Function {
+            arguments: arguments.to_string(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        McpResourceHandler.pre_tool_use_payload(&invocation),
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::new("read_mcp_resource"),
+            tool_input: arguments,
+        })
+    );
+}
+
+#[tokio::test]
+async fn mcp_resource_pre_tool_use_payload_skips_non_function_payloads() {
+    let invocation = invocation_for_payload(
+        "list_mcp_resources",
+        ToolPayload::Custom {
+            input: "ignored".to_string(),
+        },
+    )
+    .await;
+
+    assert_eq!(McpResourceHandler.pre_tool_use_payload(&invocation), None,);
 }

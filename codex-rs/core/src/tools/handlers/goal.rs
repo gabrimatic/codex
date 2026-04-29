@@ -13,7 +13,10 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::hook_tool_input_from_arguments;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use codex_protocol::protocol::ThreadGoal;
@@ -81,6 +84,16 @@ impl ToolHandler for GoalHandler {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
+    }
+
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        let ToolPayload::Function { arguments } = &invocation.payload else {
+            return None;
+        };
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::new(invocation.tool_name.display()),
+            tool_input: hook_tool_input_from_arguments(arguments),
+        })
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
@@ -222,8 +235,14 @@ fn completion_budget_report(goal: &ThreadGoal) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::tests::make_session_and_context;
+    use crate::tools::context::ToolCallSource;
+    use crate::tools::registry::PreToolUsePayload;
+    use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
+    use tokio::sync::Mutex;
 
     #[test]
     fn completed_budgeted_goal_response_reports_final_usage() {
@@ -276,5 +295,71 @@ mod tests {
                 completion_budget_report: None,
             }
         );
+    }
+
+    async fn invocation_for_payload(tool_name: &str, payload: ToolPayload) -> ToolInvocation {
+        let (session, turn) = make_session_and_context().await;
+        ToolInvocation {
+            session: session.into(),
+            turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain(tool_name),
+            source: ToolCallSource::Direct,
+            payload,
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_emits_canonical_tool_name() {
+        let arguments = json!({ "objective": "Ship release", "token_budget": 50_000 });
+        let invocation = invocation_for_payload(
+            CREATE_GOAL_TOOL_NAME,
+            ToolPayload::Function {
+                arguments: arguments.to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            GoalHandler.pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new(CREATE_GOAL_TOOL_NAME),
+                tool_input: arguments,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_handles_get_goal_with_empty_args() {
+        let invocation = invocation_for_payload(
+            GET_GOAL_TOOL_NAME,
+            ToolPayload::Function {
+                arguments: String::new(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            GoalHandler.pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new(GET_GOAL_TOOL_NAME),
+                tool_input: json!({}),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_skips_non_function_payloads() {
+        let invocation = invocation_for_payload(
+            UPDATE_GOAL_TOOL_NAME,
+            ToolPayload::Custom {
+                input: "ignored".to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(GoalHandler.pre_tool_use_payload(&invocation), None);
     }
 }

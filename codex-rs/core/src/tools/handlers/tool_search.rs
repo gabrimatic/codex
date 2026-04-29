@@ -2,6 +2,8 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::ToolSearchOutput;
+use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use crate::tools::tool_search_entry::ToolSearchEntry;
@@ -46,6 +48,17 @@ impl ToolHandler for ToolSearchHandler {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
+    }
+
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        let ToolPayload::ToolSearch { arguments } = &invocation.payload else {
+            return None;
+        };
+        let tool_input = serde_json::to_value(arguments).ok()?;
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::new(invocation.tool_name.display()),
+            tool_input,
+        })
     }
 
     async fn handle(
@@ -173,15 +186,23 @@ fn default_limit_for_bucket(bucket: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::tests::make_session_and_context;
+    use crate::tools::context::ToolCallSource;
+    use crate::tools::context::ToolInvocation;
+    use crate::tools::registry::PreToolUsePayload;
     use crate::tools::tool_search_entry::build_tool_search_entries;
+    use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_mcp::ToolInfo;
     use codex_protocol::dynamic_tools::DynamicToolSpec;
+    use codex_protocol::models::SearchToolCallParams;
     use codex_tools::ResponsesApiNamespace;
     use codex_tools::ResponsesApiNamespaceTool;
     use codex_tools::ResponsesApiTool;
     use pretty_assertions::assert_eq;
     use rmcp::model::Tool;
+    use serde_json::json;
     use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     #[test]
     fn mixed_search_results_coalesce_mcp_namespaces() {
@@ -427,5 +448,50 @@ mod tests {
         dynamic_tools: &[DynamicToolSpec],
     ) -> ToolSearchHandler {
         ToolSearchHandler::new(build_tool_search_entries(mcp_tools, dynamic_tools))
+    }
+
+    async fn invocation_for_payload(payload: ToolPayload) -> ToolInvocation {
+        let (session, turn) = make_session_and_context().await;
+        ToolInvocation {
+            session: session.into(),
+            turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-tool-search".to_string(),
+            tool_name: codex_tools::ToolName::plain(TOOL_SEARCH_TOOL_NAME),
+            source: ToolCallSource::Direct,
+            payload,
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_emits_search_arguments() {
+        let invocation = invocation_for_payload(ToolPayload::ToolSearch {
+            arguments: SearchToolCallParams {
+                query: "calendar".to_string(),
+                limit: Some(10),
+            },
+        })
+        .await;
+
+        let handler = ToolSearchHandler::new(Vec::new());
+        assert_eq!(
+            handler.pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new(TOOL_SEARCH_TOOL_NAME),
+                tool_input: json!({ "query": "calendar", "limit": 10 }),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_skips_non_tool_search_payloads() {
+        let invocation = invocation_for_payload(ToolPayload::Function {
+            arguments: "{}".to_string(),
+        })
+        .await;
+
+        let handler = ToolSearchHandler::new(Vec::new());
+        assert_eq!(handler.pre_tool_use_payload(&invocation), None);
     }
 }

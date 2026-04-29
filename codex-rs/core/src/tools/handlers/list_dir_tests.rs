@@ -1,11 +1,34 @@
 use super::*;
+use crate::session::tests::make_session_and_context;
+use crate::tools::context::ToolCallSource;
+use crate::tools::context::ToolInvocation;
+use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::PreToolUsePayload;
+use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::ReadDenyMatcher;
 use pretty_assertions::assert_eq;
+use serde_json::json;
+use std::sync::Arc;
 use tempfile::tempdir;
+use tokio::sync::Mutex;
+
+async fn invocation_for_payload(payload: ToolPayload) -> ToolInvocation {
+    let (session, turn) = make_session_and_context().await;
+    ToolInvocation {
+        session: session.into(),
+        turn: turn.into(),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: "call-list-dir".to_string(),
+        tool_name: codex_tools::ToolName::plain("list_dir"),
+        source: ToolCallSource::Direct,
+        payload,
+    }
+}
 
 async fn list_dir_slice(
     path: &Path,
@@ -328,4 +351,36 @@ async fn hides_denied_entries_and_prunes_denied_subtrees() {
         entries,
         vec!["visible/".to_string(), "  ok.txt".to_string(),]
     );
+}
+
+#[tokio::test]
+async fn list_dir_pre_tool_use_payload_emits_parsed_arguments() {
+    let arguments = json!({
+        "dir_path": "/tmp/example",
+        "offset": 1,
+        "limit": 5,
+        "depth": 2,
+    });
+    let invocation = invocation_for_payload(ToolPayload::Function {
+        arguments: arguments.to_string(),
+    })
+    .await;
+
+    assert_eq!(
+        ListDirHandler.pre_tool_use_payload(&invocation),
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::new("list_dir"),
+            tool_input: arguments,
+        })
+    );
+}
+
+#[tokio::test]
+async fn list_dir_pre_tool_use_payload_skips_non_function_payloads() {
+    let invocation = invocation_for_payload(ToolPayload::Custom {
+        input: "ignored".to_string(),
+    })
+    .await;
+
+    assert_eq!(ListDirHandler.pre_tool_use_payload(&invocation), None);
 }

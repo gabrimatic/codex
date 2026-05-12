@@ -474,7 +474,7 @@ jobs:
 
       # Trusted publishing requires npm CLI version 11.5.1 or later.
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.14.1 --ignore-scripts
 
       - name: Download npm tarballs from release
         env:

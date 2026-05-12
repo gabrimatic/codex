@@ -107,8 +107,33 @@ fn completion_budget_report(goal: &ThreadGoal) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::tests::make_session_and_context;
+    use crate::tools::context::ToolCallSource;
+    use crate::tools::context::ToolInvocation;
+    use crate::tools::context::ToolPayload;
+    use crate::tools::hook_names::HookToolName;
+    use crate::tools::registry::PreToolUsePayload;
+    use crate::tools::registry::ToolHandler;
+    use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn invocation_for_payload(tool_name: &str, payload: ToolPayload) -> ToolInvocation {
+        let (session, turn) = make_session_and_context().await;
+        ToolInvocation {
+            session: session.into(),
+            turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain(tool_name),
+            source: ToolCallSource::Direct,
+            payload,
+        }
+    }
 
     #[test]
     fn completed_budgeted_goal_response_reports_final_usage() {
@@ -161,5 +186,80 @@ mod tests {
                 completion_budget_report: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn create_goal_pre_tool_use_payload_emits_canonical_tool_name() {
+        let arguments = json!({
+            "objective": "Ship the fix",
+            "token_budget": 10_000,
+        });
+        let invocation = invocation_for_payload(
+            "create_goal",
+            ToolPayload::Function {
+                arguments: arguments.to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            CreateGoalHandler.pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new("create_goal"),
+                tool_input: arguments,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn get_goal_pre_tool_use_payload_uses_empty_object_for_empty_args() {
+        let invocation = invocation_for_payload(
+            "get_goal",
+            ToolPayload::Function {
+                arguments: String::new(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            GetGoalHandler.pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new("get_goal"),
+                tool_input: json!({}),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn update_goal_pre_tool_use_payload_emits_canonical_tool_name() {
+        let arguments = json!({ "status": "complete" });
+        let invocation = invocation_for_payload(
+            "update_goal",
+            ToolPayload::Function {
+                arguments: arguments.to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            UpdateGoalHandler.pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new("update_goal"),
+                tool_input: arguments,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_pre_tool_use_payload_skips_non_function_payloads() {
+        let invocation = invocation_for_payload(
+            "get_goal",
+            ToolPayload::Custom {
+                input: "ignored".to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(GetGoalHandler.pre_tool_use_payload(&invocation), None);
     }
 }

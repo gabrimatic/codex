@@ -16,10 +16,12 @@ use crate::original_image_detail::can_request_original_image_detail;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::function_pre_tool_use_payload;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::handlers::view_image_spec::create_view_image_tool;
+use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -74,6 +76,10 @@ impl ToolHandler for ViewImageHandler {
 
     fn supports_parallel_tool_calls(&self) -> bool {
         true
+    }
+
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        function_pre_tool_use_payload(invocation)
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
@@ -246,6 +252,8 @@ mod tests {
     use crate::session::tests::make_session_and_context;
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
+    use crate::tools::hook_names::HookToolName;
+    use crate::tools::registry::PreToolUsePayload;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::models::PermissionProfile;
     use pretty_assertions::assert_eq;
@@ -270,6 +278,54 @@ mod tests {
                 "image_url": "data:image/png;base64,AAA",
                 "detail": "high",
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_emits_parsed_arguments() {
+        let (session, turn) = make_session_and_context().await;
+        let arguments = json!({ "path": "image.png", "detail": "original" });
+        let invocation = ToolInvocation {
+            session: session.into(),
+            turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-view-image".to_string(),
+            tool_name: codex_tools::ToolName::plain("view_image"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: arguments.to_string(),
+            },
+        };
+
+        assert_eq!(
+            ViewImageHandler::default().pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new("view_image"),
+                tool_input: arguments,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_skips_non_function_payloads() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = ToolInvocation {
+            session: session.into(),
+            turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-view-image".to_string(),
+            tool_name: codex_tools::ToolName::plain("view_image"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Custom {
+                input: "ignored".to_string(),
+            },
+        };
+
+        assert_eq!(
+            ViewImageHandler::default().pre_tool_use_payload(&invocation),
+            None
         );
     }
 

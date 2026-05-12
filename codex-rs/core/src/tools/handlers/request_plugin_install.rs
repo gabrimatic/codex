@@ -32,8 +32,10 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::function_pre_tool_use_payload;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::request_plugin_install_spec::create_request_plugin_install_tool;
+use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 
 #[derive(Default)]
@@ -62,6 +64,10 @@ impl ToolHandler for RequestPluginInstallHandler {
 
     fn supports_parallel_tool_calls(&self) -> bool {
         true
+    }
+
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        function_pre_tool_use_payload(invocation)
     }
 
     #[expect(

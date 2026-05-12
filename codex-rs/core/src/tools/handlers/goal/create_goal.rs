@@ -3,9 +3,11 @@ use crate::goals::CreateGoalRequest;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::function_pre_tool_use_payload;
 use crate::tools::handlers::goal_spec::CREATE_GOAL_TOOL_NAME;
 use crate::tools::handlers::goal_spec::create_create_goal_tool;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -26,6 +28,10 @@ impl ToolHandler for CreateGoalHandler {
 
     fn spec(&self) -> Option<ToolSpec> {
         Some(create_create_goal_tool())
+    }
+
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        function_pre_tool_use_payload(invocation)
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {

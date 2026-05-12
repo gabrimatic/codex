@@ -48,6 +48,10 @@ use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 pub(crate) use crate::tools::code_mode::CodeModeExecuteHandler;
 pub(crate) use crate::tools::code_mode::CodeModeWaitHandler;
+use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolPayload;
+use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::PreToolUsePayload;
 pub use apply_patch::ApplyPatchHandler;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -84,6 +88,30 @@ where
     serde_json::from_str(arguments).map_err(|err| {
         FunctionCallError::RespondToModel(format!("failed to parse function arguments: {err}"))
     })
+}
+
+pub(crate) fn function_pre_tool_use_payload(
+    invocation: &ToolInvocation,
+) -> Option<PreToolUsePayload> {
+    let ToolPayload::Function { arguments } = &invocation.payload else {
+        return None;
+    };
+    Some(PreToolUsePayload {
+        tool_name: HookToolName::new(invocation.tool_name.to_string()),
+        tool_input: hook_tool_input_from_arguments(arguments),
+    })
+}
+
+/// Renders raw tool arguments as a JSON value suitable for hook payloads.
+///
+/// Empty input returns an empty object so hook scripts can rely on an object
+/// shape. Inputs that fail to parse as JSON are passed through as a string so
+/// hooks still receive a deterministic payload alongside the original text.
+pub(crate) fn hook_tool_input_from_arguments(arguments: &str) -> Value {
+    if arguments.trim().is_empty() {
+        return Value::Object(Map::new());
+    }
+    serde_json::from_str(arguments).unwrap_or_else(|_| Value::String(arguments.to_string()))
 }
 
 fn updated_hook_command(updated_input: &Value) -> Result<&str, FunctionCallError> {

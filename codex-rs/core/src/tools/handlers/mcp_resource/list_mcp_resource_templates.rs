@@ -4,7 +4,9 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::function_pre_tool_use_payload;
 use crate::tools::handlers::mcp_resource_spec::create_list_mcp_resource_templates_tool;
+use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use codex_protocol::models::function_call_output_content_items_to_text;
 use codex_protocol::protocol::McpInvocation;
@@ -38,6 +40,10 @@ impl ToolHandler for ListMcpResourceTemplatesHandler {
 
     fn supports_parallel_tool_calls(&self) -> bool {
         true
+    }
+
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        function_pre_tool_use_payload(invocation)
     }
 
     #[expect(

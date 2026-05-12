@@ -2,7 +2,9 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::function_pre_tool_use_payload;
 use crate::tools::handlers::plan_spec::create_update_plan_tool;
+use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -54,6 +56,10 @@ impl ToolHandler for PlanHandler {
         Some(create_update_plan_tool())
     }
 
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        function_pre_tool_use_payload(invocation)
+    }
+
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         let ToolInvocation {
             session,
@@ -91,4 +97,63 @@ fn parse_update_plan_arguments(arguments: &str) -> Result<UpdatePlanArgs, Functi
     serde_json::from_str::<UpdatePlanArgs>(arguments).map_err(|e| {
         FunctionCallError::RespondToModel(format!("failed to parse function arguments: {e}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::tests::make_session_and_context;
+    use crate::tools::context::ToolCallSource;
+    use crate::tools::hook_names::HookToolName;
+    use crate::tools::registry::PreToolUsePayload;
+    use crate::turn_diff_tracker::TurnDiffTracker;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn invocation_for_payload(payload: ToolPayload) -> ToolInvocation {
+        let (session, turn) = make_session_and_context().await;
+        ToolInvocation {
+            session: session.into(),
+            turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-plan".to_string(),
+            tool_name: codex_tools::ToolName::plain("update_plan"),
+            source: ToolCallSource::Direct,
+            payload,
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_emits_parsed_arguments() {
+        let arguments = json!({
+            "plan": [
+                { "step": "Inspect", "status": "in_progress" }
+            ]
+        });
+        let invocation = invocation_for_payload(ToolPayload::Function {
+            arguments: arguments.to_string(),
+        })
+        .await;
+
+        assert_eq!(
+            PlanHandler.pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::new("update_plan"),
+                tool_input: arguments,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_tool_use_payload_skips_non_function_payloads() {
+        let invocation = invocation_for_payload(ToolPayload::Custom {
+            input: "ignored".to_string(),
+        })
+        .await;
+
+        assert_eq!(PlanHandler.pre_tool_use_payload(&invocation), None);
+    }
 }
